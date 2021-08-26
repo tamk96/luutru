@@ -1,234 +1,457 @@
-(function($){
-	// Settings
-	var repeat = localStorage.repeat || 0,
-		shuffle = localStorage.shuffle || 'false',
-		continous = true,
-		autoplay = true,
-		playlist = [
-		{
-//tên bài hát
-title: 'DJ Happy',
-//nghệ sĩ
-artist: 'Unknown',
-//album
-album: 'DJ',
-//ảnh đại diện
-cover:'img/music-icon.jpg',
-//đường dẫn tập tin .mp3
-mp3: 'mp3/DJ-Happy.mp3',
-ogg: ''
-},{
-title: 'DJ Party',
-artist: 'Unknown',
-album: 'DJ',
-cover:'img/music-icon.jpg',
-mp3: 'mp3/DJ-Party.mp3',
-ogg: ''
-}];
+var audioPlayer = function() {
+  "use strict";
 
-	// Load playlist
-	for (var i=0; i<playlist.length; i++){
-		var item = playlist[i]; ii = i +1;
-		$('#playlist').append('<li>'+ii+'. '+item.artist+' - '+item.title+'</li>');
-	}
+  // Private variables
+  var _currentTrack = null;
+  var _elements = {
+    audio: document.getElementById("audio"),
+    playerButtons: {
+      largeToggleBtn: document.querySelector(".large-toggle-btn"),
+      nextTrackBtn: document.querySelector(".next-track-btn"),
+      previousTrackBtn: document.querySelector(".previous-track-btn"),
+      smallToggleBtn: document.getElementsByClassName("small-toggle-btn")
+    },
+    progressBar: document.querySelector(".progress-box"),
+    playListRows: document.getElementsByClassName("play-list-row"),
+    trackInfoBox: document.querySelector(".track-info-box")
+  };
+  var _playAHead = false;
+  var _progressCounter = 0;
+  var _progressBarIndicator = _elements.progressBar.children[0].children[0].children[1];
+  var _trackLoaded = false;
 
-	var time = new Date(),
-		currentTrack = shuffle === 'true' ? time.getTime() % playlist.length : 0,
-		trigger = false,
-		audio, timeout, isPlaying, playCounts;
+  /**
+   * Determines the buffer progress.
+   *
+   * @param audio The audio element on the page.
+   **/
+  var _bufferProgress = function(audio) {
+    var bufferedTime = (audio.buffered.end(0) * 100) / audio.duration;
+    var progressBuffer = _elements.progressBar.children[0].children[0].children[0];
 
-	var play = function(){
-		audio.play();
-		$('.playback').addClass('playing');
-		timeout = setInterval(updateProgress, 500);
-		isPlaying = true;
-	}
+    progressBuffer.style.width = bufferedTime + "%";
+  };
 
-	var pause = function(){
-		audio.pause();
-		$('.playback').removeClass('playing');
-		clearInterval(updateProgress);
-		isPlaying = false;
-	}
+  /**
+   * A utility function for getting the event cordinates based on browser type.
+   *
+   * @param e The JavaScript event.
+   **/
+  var _getXY = function(e) {
+    var containerX = _elements.progressBar.offsetLeft;
+    var containerY = _elements.progressBar.offsetTop;
 
-	// Update progress
-	var setProgress = function(value){
-		var currentSec = parseInt(value%60) < 10 ? '0' + parseInt(value%60) : parseInt(value%60),
-			ratio = value / audio.duration * 100;
+    var coords = {
+      x: null,
+      y: null
+    };
 
-		$('.timer').html(parseInt(value/60)+':'+currentSec);
-		$('.progress .pace').css('width', ratio + '%');
-		$('.progress .slider a').css('left', ratio + '%');
-	}
+    var isTouchSuopported = "ontouchstart" in window;
 
-	var updateProgress = function(){
-		setProgress(audio.currentTime);
-	}
+    if (isTouchSuopported) { //For touch devices
+      coords.x = e.clientX - containerX;
+      coords.y = e.clientY - containerY;
 
-	// Progress slider
-	$('.progress .slider').slider({step: 0.1, slide: function(event, ui){
-		$(this).addClass('enable');
-		setProgress(audio.duration * ui.value / 100);
-		clearInterval(timeout);
-	}, stop: function(event, ui){
-		audio.currentTime = audio.duration * ui.value / 100;
-		$(this).removeClass('enable');
-		timeout = setInterval(updateProgress, 500);
-	}});
+      return coords;
+    } else if (e.offsetX || e.offsetX === 0) { // For webkit browsers
+      coords.x = e.offsetX;
+      coords.y = e.offsetY;
 
-	// Volume slider
-	var setVolume = function(value){
-		audio.volume = localStorage.volume = value;
-		$('.volume .pace').css('width', value * 100 + '%');
-		$('.volume .slider a').css('left', value * 100 + '%');
-	}
+      return coords;
+    } else if (e.layerX || e.layerX === 0) { // For Mozilla firefox
+      coords.x = e.layerX;
+      coords.y = e.layerY;
 
-	var volume = localStorage.volume || 0.5;
-	$('.volume .slider').slider({max: 1, min: 0, step: 0.01, value: volume, slide: function(event, ui){
-		setVolume(ui.value);
-		$(this).addClass('enable');
-		$('.mute').removeClass('enable');
-	}, stop: function(){
-		$(this).removeClass('enable');
-	}}).children('.pace').css('width', volume * 100 + '%');
+      return coords;
+    }
+  };
 
-	$('.mute').click(function(){
-		if ($(this).hasClass('enable')){
-			setVolume($(this).data('volume'));
-			$(this).removeClass('enable');
-		} else {
-			$(this).data('volume', audio.volume).addClass('enable');
-			setVolume(0);
-		}
-	});
+  var _handleProgressIndicatorClick = function(e) {
+    var progressBar = document.querySelector(".progress-box");
+    var xCoords = _getXY(e).x;
 
-	// Switch track
-	var switchTrack = function(i){
-		if (i < 0){
-			track = currentTrack = playlist.length - 1;
-		} else if (i >= playlist.length){
-			track = currentTrack = 0;
-		} else {
-			track = i;
-		}
+    return (xCoords - progressBar.offsetLeft) / progressBar.children[0].offsetWidth;
+  };
 
-		$('audio').remove();
-		loadMusic(track);
-		if (isPlaying == true) play();
-	}
+  /**
+   * Initializes the html5 audio player and the playlist.
+   *
+   **/
+  var initPlayer = function() {
 
-	// Shuffle
-	var shufflePlay = function(){
-		var time = new Date(),
-			lastTrack = currentTrack;
-		currentTrack = time.getTime() % playlist.length;
-		if (lastTrack == currentTrack) ++currentTrack;
-		switchTrack(currentTrack);
-	}
+    if (_currentTrack === 1 || _currentTrack === null) {
+      _elements.playerButtons.previousTrackBtn.disabled = true;
+    }
 
-	// Fire when track ended
-	var ended = function(){
-		pause();
-		audio.currentTime = 0;
-		playCounts++;
-		if (continous == true) isPlaying = true;
-		if (repeat == 1){
-			play();
-		} else {
-			if (shuffle === 'true'){
-				shufflePlay();
-			} else {
-				if (repeat == 2){
-					switchTrack(++currentTrack);
-				} else {
-					if (currentTrack < playlist.length) switchTrack(++currentTrack);
-				}
-			}
-		}
-	}
+    //Adding event listeners to playlist clickable elements.
+    for (var i = 0; i < _elements.playListRows.length; i++) {
+      var smallToggleBtn = _elements.playerButtons.smallToggleBtn[i];
+      var playListLink = _elements.playListRows[i].children[2].children[0];
 
-	var beforeLoad = function(){
-		var endVal = this.seekable && this.seekable.length ? this.seekable.end(0) : 0;
-		$('.progress .loaded').css('width', (100 / (this.duration || 1) * endVal) +'%');
-	}
+      //Playlist link clicked.
+      playListLink.addEventListener("click", function(e) {
+        e.preventDefault();
+        var selectedTrack = parseInt(this.parentNode.parentNode.getAttribute("data-track-row"));
 
-	// Fire when track loaded completely
-	var afterLoad = function(){
-		if (autoplay == true) play();
-	}
+        if (selectedTrack !== _currentTrack) {
+          _resetPlayStatus();
+          _currentTrack = null;
+          _trackLoaded = false;
+        }
 
-	// Load track
-	var loadMusic = function(i){
-		var item = playlist[i],
-			newaudio = $('<audio>').html('<source src="'+item.mp3+'"><source src="'+item.ogg+'">').appendTo('#player');
-		
-		$('.cover').html('<img src="'+item.cover+'" alt="'+item.album+'">');
-		$('.tag').html('<strong>'+item.title+'</strong><span class="artist">'+item.artist+'</span><span class="album">'+item.album+'</span><span><font size="0.5">DN Player'+'</font></span>');
-		$('#playlist li').removeClass('playing').eq(i).addClass('playing');
-		audio = newaudio[0];
-		audio.volume = $('.mute').hasClass('enable') ? 0 : volume;
-		audio.addEventListener('progress', beforeLoad, false);
-		audio.addEventListener('durationchange', beforeLoad, false);
-		audio.addEventListener('canplay', afterLoad, false);
-		audio.addEventListener('ended', ended, false);
-	}
+        if (_trackLoaded === false) {
+          _currentTrack = parseInt(selectedTrack);
+          _setTrack();
+        } else {
+          _playBack(this);
+        }
+      }, false);
 
-	loadMusic(currentTrack);
-	$('.playback').on('click', function(){
-		if ($(this).hasClass('playing')){
-			pause();
-		} else {
-			play();
-		}
-	});
-	$('.rewind').on('click', function(){
-		if (shuffle === 'true'){
-			shufflePlay();
-		} else {
-			switchTrack(--currentTrack);
-		}
-	});
-	$('.fastforward').on('click', function(){
-		if (shuffle === 'true'){
-			shufflePlay();
-		} else {
-			switchTrack(++currentTrack);
-		}
-	});
-	$('#playlist li').each(function(i){
-		var _i = i;
-		$(this).on('click', function(){
-			switchTrack(_i);
-		});
-	});
+      //Small toggle button clicked.
+      smallToggleBtn.addEventListener("click", function(e) {
+        e.preventDefault();
+        var selectedTrack = parseInt(this.parentNode.getAttribute("data-track-row"));
 
-	if (shuffle === 'true') $('.shuffle').addClass('enable');
-	if (repeat == 1){
-		$('.repeat').addClass('once');
-	} else if (repeat == 2){
-		$('.repeat').addClass('all');
-	}
+        if (selectedTrack !== _currentTrack) {
+          _resetPlayStatus();
+          _currentTrack = null;
+          _trackLoaded = false;
+        }
 
-	$('.repeat').on('click', function(){
-		if ($(this).hasClass('once')){
-			repeat = localStorage.repeat = 2;
-			$(this).removeClass('once').addClass('all');
-		} else if ($(this).hasClass('all')){
-			repeat = localStorage.repeat = 0;
-			$(this).removeClass('all');
-		} else {
-			repeat = localStorage.repeat = 1;
-			$(this).addClass('once');
-		}
-	});
+        if (_trackLoaded === false) {
+          _currentTrack = parseInt(selectedTrack);
+          _setTrack();
+        } else {
+          _playBack(this);
+        }
 
-	$('.shuffle').on('click', function(){
-		if ($(this).hasClass('enable')){
-			shuffle = localStorage.shuffle = 'false';
-			$(this).removeClass('enable');
-		} else {
-			shuffle = localStorage.shuffle = 'true';
-			$(this).addClass('enable');
-		}
-	});
-})(jQuery);
+      }, false);
+    }
+
+    //Audio time has changed so update it.
+    _elements.audio.addEventListener("timeupdate", _trackTimeChanged, false);
+
+    //Audio track has ended playing.
+    _elements.audio.addEventListener("ended", function(e) {
+      _trackHasEnded();
+    }, false);
+
+    //Audio error. 
+    _elements.audio.addEventListener("error", function(e) {
+      switch (e.target.error.code) {
+        case e.target.error.MEDIA_ERR_ABORTED:
+          alert('You aborted the video playback.');
+          break;
+        case e.target.error.MEDIA_ERR_NETWORK:
+          alert('A network error caused the audio download to fail.');
+          break;
+        case e.target.error.MEDIA_ERR_DECODE:
+          alert('The audio playback was aborted due to a corruption problem or because the video used features your browser did not support.');
+          break;
+        case e.target.error.MEDIA_ERR_SRC_NOT_SUPPORTED:
+          alert('The video audio not be loaded, either because the server or network failed or because the format is not supported.');
+          break;
+        default:
+          alert('An unknown error occurred.');
+          break;
+      }
+      trackLoaded = false;
+      _resetPlayStatus();
+    }, false);
+
+    //Large toggle button clicked.
+    _elements.playerButtons.largeToggleBtn.addEventListener("click", function(e) {
+      if (_trackLoaded === false) {
+        _currentTrack = parseInt(1);
+        _setTrack()
+      } else {
+        _playBack();
+      }
+    }, false);
+
+    //Next track button clicked.
+    _elements.playerButtons.nextTrackBtn.addEventListener("click", function(e) {
+      if (this.disabled !== true) {
+        _currentTrack++;
+        _trackLoaded = false;
+        _resetPlayStatus();
+        _setTrack();
+      }
+    }, false);
+
+    //Previous track button clicked.
+    _elements.playerButtons.previousTrackBtn.addEventListener("click", function(e) {
+      if (this.disabled !== true) {
+        _currentTrack--;
+        _trackLoaded = false;
+        _resetPlayStatus();
+        _setTrack();
+      }
+    }, false);
+
+    //User is moving progress indicator.
+    _progressBarIndicator.addEventListener("mousedown", _mouseDown, false);
+
+    //User stops moving progress indicator.
+    window.addEventListener("mouseup", _mouseUp, false);
+  };
+
+  /**
+   * Handles the mousedown event by a user and determines if the mouse is being moved.
+   *
+   * @param e The event object.
+   **/
+  var _mouseDown = function(e) {
+    window.addEventListener("mousemove", _moveProgressIndicator, true);
+    audio.removeEventListener("timeupdate", _trackTimeChanged, false);
+
+    _playAHead = true;
+  };
+
+  /**
+   * Handles the mouseup event by a user.
+   *
+   * @param e The event object.
+   **/
+  var _mouseUp = function(e) {
+    if (_playAHead === true) {
+      var duration = parseFloat(audio.duration);
+      var progressIndicatorClick = parseFloat(_handleProgressIndicatorClick(e));
+      window.removeEventListener("mousemove", _moveProgressIndicator, true);
+
+      audio.currentTime = duration * progressIndicatorClick;
+      audio.addEventListener("timeupdate", _trackTimeChanged, false);
+      _playAHead = false;
+    }
+  };
+
+  /**
+   * Moves the progress indicator to a new point in the audio.
+   *
+   * @param e The event object.
+   **/
+  var _moveProgressIndicator = function(e) {
+    var newPosition = 0;
+    var progressBarOffsetLeft = _elements.progressBar.offsetLeft;
+    var progressBarWidth = 0;
+    var progressBarIndicator = _elements.progressBar.children[0].children[0].children[1];
+    var progressBarIndicatorWidth = _progressBarIndicator.offsetWidth;
+    var xCoords = _getXY(e).x;
+
+    progressBarWidth = _elements.progressBar.children[0].offsetWidth - progressBarIndicatorWidth;
+    newPosition = xCoords - progressBarOffsetLeft;
+
+    if ((newPosition >= 1) && (newPosition <= progressBarWidth)) {
+      progressBarIndicator.style.left = newPosition + ".px";
+    }
+    if (newPosition < 0) {
+      progressBarIndicator.style.left = "0";
+    }
+    if (newPosition > progressBarWidth) {
+      progressBarIndicator.style.left = progressBarWidth + "px";
+    }
+  };
+
+  /**
+   * Controls playback of the audio element.
+   *
+   **/
+  var _playBack = function() {
+    if (_elements.audio.paused) {
+      _elements.audio.play();
+      _updatePlayStatus(true);
+      document.title = "\u25B6 " + document.title;
+    } else {
+      _elements.audio.pause();
+      _updatePlayStatus(false);
+      document.title = document.title.substr(2);
+    }
+  };
+
+  /**
+   * Sets the track if it hasn't already been loaded yet.
+   *
+   **/
+  var _setTrack = function() {
+    var songURL = _elements.audio.children[_currentTrack - 1].src;
+
+    _elements.audio.setAttribute("src", songURL);
+    _elements.audio.load();
+
+    _trackLoaded = true;
+
+    _setTrackTitle(_currentTrack, _elements.playListRows);
+
+    _setActiveItem(_currentTrack, _elements.playListRows);
+
+    _elements.trackInfoBox.style.visibility = "visible";
+
+    _playBack();
+  };
+
+  /**
+   * Sets the activly playing item within the playlist.
+   *
+   * @param currentTrack The current track number being played.
+   * @param playListRows The playlist object.
+   **/
+  var _setActiveItem = function(currentTrack, playListRows) {
+    for (var i = 0; i < playListRows.length; i++) {
+      playListRows[i].children[2].className = "track-title";
+    }
+
+    playListRows[currentTrack - 1].children[2].className = "track-title active-track";
+  };
+
+  /**
+   * Sets the text for the currently playing song.
+   *
+   * @param currentTrack The current track number being played.
+   * @param playListRows The playlist object.
+   **/
+  var _setTrackTitle = function(currentTrack, playListRows) {
+    var trackTitleBox = document.querySelector(".player .info-box .track-info-box .track-title-text");
+    var trackTitle = playListRows[currentTrack - 1].children[2].outerText;
+
+    trackTitleBox.innerHTML = null;
+
+    trackTitleBox.innerHTML = trackTitle;
+
+    document.title = trackTitle;
+  };
+
+  /**
+   * Plays the next track when a track has ended playing.
+   *
+   **/
+  var _trackHasEnded = function() {
+    parseInt(_currentTrack);
+    _currentTrack = (_currentTrack === _elements.playListRows.length) ? 1 : _currentTrack + 1;
+    _trackLoaded = false;
+
+    _resetPlayStatus();
+
+    _setTrack();
+  };
+
+  /**
+   * Updates the time for the song being played.
+   *
+   **/
+  var _trackTimeChanged = function() {
+    var currentTimeBox = document.querySelector(".player .info-box .track-info-box .audio-time .current-time");
+    var currentTime = audio.currentTime;
+    var duration = audio.duration;
+    var durationBox = document.querySelector(".player .info-box .track-info-box .audio-time .duration");
+    var trackCurrentTime = _trackTime(currentTime);
+    var trackDuration = _trackTime(duration);
+
+    currentTimeBox.innerHTML = null;
+    currentTimeBox.innerHTML = trackCurrentTime;
+
+    durationBox.innerHTML = null;
+    durationBox.innerHTML = trackDuration;
+
+    _updateProgressIndicator(audio);
+    _bufferProgress(audio);
+  };
+
+  /**
+   * A utility function for converting a time in miliseconds to a readable time of minutes and seconds.
+   *
+   * @param seconds The time in seconds.
+   *
+   * @return time The time in minutes and/or seconds.
+   **/
+  var _trackTime = function(seconds) {
+    var min = 0;
+    var sec = Math.floor(seconds);
+    var time = 0;
+
+    min = Math.floor(sec / 60);
+
+    min = min >= 10 ? min : '0' + min;
+
+    sec = Math.floor(sec % 60);
+
+    sec = sec >= 10 ? sec : '0' + sec;
+
+    time = min + ':' + sec;
+
+    return time;
+  };
+
+  /**
+   * Updates both the large and small toggle buttons accordingly.
+   *
+   * @param audioPlaying A booean value indicating if audio is playing or paused.
+   **/
+  var _updatePlayStatus = function(audioPlaying) {
+    if (audioPlaying) {
+      _elements.playerButtons.largeToggleBtn.children[0].className = "large-pause-btn";
+
+      _elements.playerButtons.smallToggleBtn[_currentTrack - 1].children[0].className = "small-pause-btn";
+    } else {
+      _elements.playerButtons.largeToggleBtn.children[0].className = "large-play-btn";
+
+      _elements.playerButtons.smallToggleBtn[_currentTrack - 1].children[0].className = "small-play-btn";
+    }
+
+    //Update next and previous buttons accordingly
+    if (_currentTrack === 1) {
+      _elements.playerButtons.previousTrackBtn.disabled = true;
+      _elements.playerButtons.previousTrackBtn.className = "previous-track-btn disabled";
+    } else if (_currentTrack > 1 && _currentTrack !== _elements.playListRows.length) {
+      _elements.playerButtons.previousTrackBtn.disabled = false;
+      _elements.playerButtons.previousTrackBtn.className = "previous-track-btn";
+      _elements.playerButtons.nextTrackBtn.disabled = false;
+      _elements.playerButtons.nextTrackBtn.className = "next-track-btn";
+    } else if (_currentTrack === _elements.playListRows.length) {
+      _elements.playerButtons.nextTrackBtn.disabled = true;
+      _elements.playerButtons.nextTrackBtn.className = "next-track-btn disabled";
+    }
+  };
+
+  /**
+   * Updates the location of the progress indicator according to how much time left in audio.
+   *
+   **/
+  var _updateProgressIndicator = function() {
+    var currentTime = parseFloat(_elements.audio.currentTime);
+    var duration = parseFloat(_elements.audio.duration);
+    var indicatorLocation = 0;
+    var progressBarWidth = parseFloat(_elements.progressBar.offsetWidth);
+    var progressIndicatorWidth = parseFloat(_progressBarIndicator.offsetWidth);
+    var progressBarIndicatorWidth = progressBarWidth - progressIndicatorWidth;
+
+    indicatorLocation = progressBarIndicatorWidth * (currentTime / duration);
+
+    _progressBarIndicator.style.left = indicatorLocation + "px";
+  };
+
+  /**
+   * Resets all toggle buttons to be play buttons.
+   *
+   **/
+  var _resetPlayStatus = function() {
+    var smallToggleBtn = _elements.playerButtons.smallToggleBtn;
+
+    _elements.playerButtons.largeToggleBtn.children[0].className = "large-play-btn";
+
+    for (var i = 0; i < smallToggleBtn.length; i++) {
+      if (smallToggleBtn[i].children[0].className === "small-pause-btn") {
+        smallToggleBtn[i].children[0].className = "small-play-btn";
+      }
+    }
+  };
+
+  return {
+    initPlayer: initPlayer
+  };
+};
+
+(function() {
+  var player = new audioPlayer();
+
+  player.initPlayer();
+})();
